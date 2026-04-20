@@ -54,6 +54,12 @@ uvicorn app.main:app --reload
 
 API available at `http://localhost:8000`
 
+### New endpoints
+
+- `POST /analyze` - run full agentic audit orchestration (data audit, bias hunt, explainability, remediation)
+
+The backend now auto-detects a target column on upload and will kick off a background training job (XGBoost primary, RandomForest fallback). Trained model artifacts are stored under `backend/models/`.
+
 ## 2) Frontend
 
 ```bash

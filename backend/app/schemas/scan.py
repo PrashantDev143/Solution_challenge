@@ -1,26 +1,23 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+from typing import Any, Optional
 
 
 class ScanRequest(BaseModel):
-    dataset_path: str | None = None
-    target_column: str | None = None
-
-
-class BiasedGroup(BaseModel):
-    group: str
-    approval_rate: float
-    baseline_rate: float
-    difference: float
-    disparate_impact: float
-    severity: str
-    count: int
-    ranking_reason: str | None = None
+    dataset_path: str
+    target_column: Optional[str] = None
 
 
 class ScanResponse(BaseModel):
+    dataset_path: str
     total_rows: int
     groups_scanned: int
-    biased_groups_found: int
-    fairness_score: float = Field(ge=0, le=100)
-    target_column: str
-    top_biased_groups: list[BiasedGroup]
+    fairness_score: float
+    severity_breakdown: dict[str, int]
+
+    groups: list[dict[str, Any]] = []
+    top_groups: list[dict[str, Any]] = []
+
+    biased_groups_found: int = 0
+    top_biased_groups: list[dict[str, Any]] = []
+    target_column: Optional[str] = None
+    message: Optional[str] = None

@@ -142,7 +142,7 @@ export default function DashboardPage() {
   if (!report) {
     return (
       <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-sm text-red-700">
-        {error ?? "No report found. Upload and run a scan first."}
+        {error ?? "No scan report found yet. Run a scan first."}
       </div>
     );
   }

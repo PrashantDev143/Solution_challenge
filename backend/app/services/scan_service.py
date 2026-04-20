@@ -5,11 +5,12 @@ from pathlib import Path
 import pandas as pd
 from fastapi import HTTPException
 
-from app.services.ml_bridge import detect_bias
+from app.services.fairness_engine import scan_groups
 from app.services.state import (
     get_latest_uploaded_path,
     set_latest_scan_report,
 )
+from app.services.cache_service import set_report
 
 DEFAULT_TARGET_CANDIDATES = [
     "approved",
@@ -90,13 +91,64 @@ def run_bias_scan(dataset_path: str | None = None, target_column: str | None = N
         raise HTTPException(status_code=400, detail="Dataset is empty.")
 
     detected_target = _detect_target_column(df, target_column)
+    print(f"[scan_service] Running scan on {path} with target={detected_target}")
 
-    result = detect_bias(
-        df=df,
-        target_column=detected_target,
-        sensitive_candidates=SENSITIVE_COLUMNS,
-    )
-    result["dataset_path"] = str(path)
+    groups = scan_groups(df, detected_target)
 
-    set_latest_scan_report(result)
+    total_rows = len(df)
+
+    # top biased groups: only underprivileged
+    top_groups = [g for g in groups if g.get("category") == "underprivileged"][:10]
+
+    # groups details: include all groups
+    groups_details = groups
+
+    # severity breakdown (count only underprivileged groups)
+    severity_breakdown = {"high": 0, "medium": 0, "low": 0}
+    for g in groups:
+        if g.get("category") == "underprivileged":
+            sev = g.get("severity")
+            if sev in severity_breakdown:
+                severity_breakdown[sev] += 1
+
+    # fairness score: penalize only underprivileged gaps (negative gaps)
+    penalty = 0.0
+    for g in groups:
+        if g.get("category") == "underprivileged":
+            gap = g.get("gap") or 0.0
+            count = g.get("count") or 0
+            # only negative gaps (underprivileged) contribute
+            if gap < 0:
+                penalty += (abs(gap) * 100.0) * (count / total_rows)
+
+    fairness_score = max(0.0, 100.0 - penalty)
+
+    result = {
+        "dataset_path": str(path),
+        "total_rows": total_rows,
+        "groups_scanned": len(groups_details),
+        "top_groups": top_groups,
+        "groups": groups_details,
+        "severity_breakdown": severity_breakdown,
+        "fairness_score": round(fairness_score, 3),
+    }
+
+    if not top_groups:
+        result["message"] = "No harmful bias detected"
+
+    # populate backwards-compatible fields to avoid frontend breakage
+    result["biased_groups_found"] = len([g for g in groups_details if g.get("category") == "underprivileged"])
+    result["top_biased_groups"] = result.get("top_groups", [])
+    result["target_column"] = detected_target
+
+    # store report in both state and shared cache for robustness
+    try:
+        set_latest_scan_report(result)
+    except Exception:
+        pass
+    try:
+        set_report(result)
+    except Exception:
+        pass
+
     return result

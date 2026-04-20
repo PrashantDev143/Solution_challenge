@@ -8,6 +8,8 @@ from fastapi import HTTPException, UploadFile, status
 
 from app.core.config import UPLOAD_DIR
 from app.services.state import clear_latest_scan_report, set_latest_uploaded_path
+from app.services.target_detector import detect_target
+from app.services.model_trainer import train_model_background
 
 
 def _validate_csv_filename(filename: str) -> None:
@@ -44,9 +46,26 @@ def save_and_preview_csv(file: UploadFile) -> dict:
     set_latest_uploaded_path(str(temp_path))
     clear_latest_scan_report()
 
+    # debug log
+    try:
+        print(f"[upload_service] Saved upload to {temp_path}, detected target={target}")
+    except Exception:
+        pass
+
+    # detect target column
+    target = detect_target(df)
+
+    # trigger async background training (best-effort)
+    try:
+        train_model_background(df.copy(), target, model_name=temp_path.stem)
+    except Exception:
+        # don't fail upload if training scheduling fails
+        pass
+
     return {
         "temp_path": str(temp_path),
         "columns": df.columns.tolist(),
+        "target_column": target,
         "row_count": int(len(df)),
         "preview_rows": df.head(10).fillna("").to_dict(orient="records"),
     }
