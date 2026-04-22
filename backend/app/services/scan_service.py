@@ -94,32 +94,44 @@ def run_bias_scan(dataset_path: str | None = None, target_column: str | None = N
     print(f"[scan_service] Running scan on {path} with target={detected_target}")
 
     groups = scan_groups(df, detected_target)
+    print(f"[scan_service] Found {len(groups)} groups total")
 
     total_rows = len(df)
 
-    # top biased groups: only underprivileged
-    top_groups = [g for g in groups if g.get("category") == "underprivileged"][:10]
+    # top biased groups: prioritize underprivileged groups, then any high-severity groups
+    top_groups = []
+    for g in groups:
+        if g.get("category") == "underprivileged":
+            top_groups.append(g)
+        if len(top_groups) >= 10:
+            break
+    
+    # if we have fewer than 10, add privileged groups with high difference
+    if len(top_groups) < 10:
+        for g in groups:
+            if g.get("category") != "underprivileged" and abs(g.get("difference", 0)) >= 0.10:
+                top_groups.append(g)
+            if len(top_groups) >= 10:
+                break
 
     # groups details: include all groups
     groups_details = groups
 
-    # severity breakdown (count only underprivileged groups)
+    # severity breakdown (count by severity)
     severity_breakdown = {"high": 0, "medium": 0, "low": 0}
     for g in groups:
-        if g.get("category") == "underprivileged":
-            sev = g.get("severity")
-            if sev in severity_breakdown:
-                severity_breakdown[sev] += 1
+        sev = g.get("severity")
+        if sev in severity_breakdown:
+            severity_breakdown[sev] += 1
 
-    # fairness score: penalize only underprivileged gaps (negative gaps)
+    # fairness score: penalize negative gaps (underprivileged groups)
     penalty = 0.0
     for g in groups:
-        if g.get("category") == "underprivileged":
-            gap = g.get("gap") or 0.0
-            count = g.get("count") or 0
-            # only negative gaps (underprivileged) contribute
-            if gap < 0:
-                penalty += (abs(gap) * 100.0) * (count / total_rows)
+        gap = g.get("gap") or 0.0
+        count = g.get("count") or 0
+        # only negative gaps (underprivileged) contribute to penalty
+        if gap < 0:
+            penalty += (abs(gap) * 100.0) * (count / total_rows)
 
     fairness_score = max(0.0, 100.0 - penalty)
 
