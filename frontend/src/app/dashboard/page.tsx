@@ -79,20 +79,32 @@ export default function DashboardPage() {
   const [explanation, setExplanation] = useState<ExplainResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isExplaining, setIsExplaining] = useState(false);
 
   const refresh = async () => {
     try {
       setLoading(true);
       setError(null);
       const latest = await getReport();
+      if (!latest) {
+        throw new Error("No scan report available");
+      }
       setReport(latest);
       setSelectedGroup(latest.top_biased_groups[0] ?? null);
       localStorage.setItem("biasxray_scan_report", JSON.stringify(latest));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load report.");
+      const errorMsg = err instanceof Error ? err.message : "Failed to load report. Please run a scan first.";
+      setError(errorMsg);
+      
+      // Try to load from cache as fallback
       const cached = localStorage.getItem("biasxray_scan_report");
       if (cached) {
-        setReport(JSON.parse(cached) as ScanResponse);
+        try {
+          setReport(JSON.parse(cached) as ScanResponse);
+          setError(null); // Clear error if cached data loads successfully
+        } catch (parseErr) {
+          console.error("Failed to parse cached report:", parseErr);
+        }
       }
     } finally {
       setLoading(false);
@@ -119,6 +131,7 @@ export default function DashboardPage() {
     }
 
     try {
+      setIsExplaining(true);
       setError(null);
       const result = await explain({
         group: prettifyGroupLabel(selectedGroup.group),
@@ -131,18 +144,44 @@ export default function DashboardPage() {
       });
       setExplanation(result);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not generate explanation.");
+      const errorMsg = err instanceof Error ? err.message : "Could not generate explanation. Please try again.";
+      setError(errorMsg);
+      console.error("Explanation error:", err);
+    } finally {
+      setIsExplaining(false);
     }
   };
 
   if (loading) {
-    return <div className="rounded-xl bg-white p-6 text-sm text-slate-600">Loading dashboard...</div>;
+    return (
+      <div className="space-y-4">
+        <div className="animate-pulse rounded-xl bg-slate-200 p-6 h-20"></div>
+        <div className="grid gap-4 md:grid-cols-4">
+          {[...Array(4)].map((_, i) => (
+            <div key={i} className="animate-pulse rounded-xl bg-slate-200 h-24"></div>
+          ))}
+        </div>
+        <div className="rounded-xl bg-white p-6 text-sm text-slate-600">
+          <div className="flex items-center gap-2">
+            <div className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-slate-700"></div>
+            Loading dashboard...
+          </div>
+        </div>
+      </div>
+    );
   }
 
   if (!report) {
     return (
       <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-sm text-red-700">
-        {error ?? "No scan report found yet. Run a scan first."}
+        <p className="font-semibold mb-2">No Scan Data Available</p>
+        <p>{error ?? "No scan report found yet. Please upload a dataset and run a scan first."}</p>
+        <button
+          onClick={() => window.location.href = "/upload"}
+          className="mt-4 rounded-lg bg-red-600 px-4 py-2 text-white hover:bg-red-700"
+        >
+          Go to Upload
+        </button>
       </div>
     );
   }
@@ -181,22 +220,38 @@ export default function DashboardPage() {
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
           <h2 className="font-display text-lg font-semibold text-slate-900">Top Biased Groups</h2>
-          <div className="mt-4 h-80">
+          <div className="mt-4" style={{ height: "400px" }}>
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={displayedGroups} margin={{ top: 10, right: 10, left: 0, bottom: 60 }}>
-                <CartesianGrid strokeDasharray="3 3" />
+              <BarChart data={displayedGroups} margin={{ top: 20, right: 30, left: 50, bottom: 80 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                 <XAxis
                   dataKey="group"
                   interval={0}
-                  angle={-24}
+                  angle={-45}
                   textAnchor="end"
-                  height={92}
-                  tickFormatter={(value) => compactGroupLabel(String(value))}
+                  height={80}
+                  tickFormatter={(value) => compactGroupLabel(String(value), 20)}
+                  tick={{ fontSize: 11 }}
+                  width={100}
                 />
-                <YAxis />
-                <Tooltip formatter={(value) => value} labelFormatter={(label) => prettifyGroupLabel(String(label))} />
-                <Legend />
-                <Bar dataKey="difference" name="Approval Gap">
+                <YAxis 
+                  width={50}
+                  label={{ value: "Approval Gap %", angle: -90, position: "insideLeft" }}
+                />
+                <Tooltip 
+                  formatter={(value) => `${(Number(value) * 100).toFixed(2)}%`} 
+                  labelFormatter={(label) => prettifyGroupLabel(String(label))}
+                  contentStyle={{ backgroundColor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "8px" }}
+                />
+                <Legend wrapperStyle={{ paddingTop: "15px" }} />
+                <Bar 
+                  dataKey="difference" 
+                  name="Approval Gap"
+                  isAnimationActive={true}
+                  animationDuration={800}
+                  animationEasing="ease-in-out"
+                  radius={[8, 8, 0, 0]}
+                >
                   {displayedGroups.map((entry) => (
                     <Cell key={entry.group} fill={SEVERITY_COLORS[entry.severity] ?? "#64748b"} />
                   ))}
@@ -208,15 +263,27 @@ export default function DashboardPage() {
 
         <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
           <h2 className="font-display text-lg font-semibold text-slate-900">Severity Breakdown</h2>
-          <div className="mt-4 h-80">
+          <div className="mt-4" style={{ height: "400px" }}>
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
-                <Pie data={pieData} dataKey="count" nameKey="severity" outerRadius={110} label>
+                <Pie 
+                  data={pieData} 
+                  dataKey="count" 
+                  nameKey="severity" 
+                  outerRadius={100} 
+                  label={({ severity, count }) => `${severity}: ${count}`}
+                  isAnimationActive={true}
+                  animationDuration={800}
+                  animationEasing="ease-out"
+                >
                   {pieData.map((entry) => (
                     <Cell key={entry.severity} fill={SEVERITY_COLORS[entry.severity] ?? "#64748b"} />
                   ))}
                 </Pie>
-                <Tooltip />
+                <Tooltip 
+                  formatter={(value) => [`${value} groups`, "Count"]}
+                  contentStyle={{ backgroundColor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "8px" }}
+                />
               </PieChart>
             </ResponsiveContainer>
           </div>
@@ -270,10 +337,10 @@ export default function DashboardPage() {
           <h2 className="font-display text-lg font-semibold text-slate-900">Gemini Explanation</h2>
           <button
             onClick={() => void requestExplanation()}
-            disabled={!selectedGroup}
+            disabled={!selectedGroup || isExplaining}
             className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
           >
-            Generate Explanation
+            {isExplaining ? "Generating..." : "Generate Explanation"}
           </button>
         </div>
 

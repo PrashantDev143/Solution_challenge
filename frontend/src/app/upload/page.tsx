@@ -6,8 +6,19 @@ import { useRouter } from "next/navigation";
 import { getReport, scanBias, uploadCsv } from "@/lib/api";
 import { ScanResponse, UploadResponse } from "@/lib/types";
 
+const MAX_FILE_SIZE_MB = 50;
+const ALLOWED_FILE_TYPES = [".csv", "text/csv"];
+
 function prettyHeader(value: string) {
   return value.replaceAll("_", " ").replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes === 0) return "0 Bytes";
+  const k = 1024;
+  const sizes = ["Bytes", "KB", "MB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + " " + sizes[i];
 }
 
 export default function UploadPage() {
@@ -15,18 +26,49 @@ export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<string | null>(null);
   const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
   const [scanResult, setScanResult] = useState<ScanResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const previewColumns = useMemo(() => uploadResult?.columns ?? [], [uploadResult]);
 
+  const validateFile = (selected: File): { valid: boolean; error?: string } => {
+    if (!selected) {
+      return { valid: false };
+    }
+
+    // Check file extension
+    if (!selected.name.toLowerCase().endsWith(".csv")) {
+      return { valid: false, error: "Only .csv files are supported." };
+    }
+
+    // Check file size
+    if (selected.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
+      return {
+        valid: false,
+        error: `File size (${formatFileSize(selected.size)}) exceeds ${MAX_FILE_SIZE_MB}MB limit.`,
+      };
+    }
+
+    // Check file type
+    if (selected.type && !ALLOWED_FILE_TYPES.includes(selected.type)) {
+      return { valid: false, error: "Invalid file type. Please upload a CSV file." };
+    }
+
+    return { valid: true };
+  };
+
   const onFileSelect = (selected: File | null) => {
     if (!selected) {
+      setFile(null);
+      setError(null);
       return;
     }
-    if (!selected.name.toLowerCase().endsWith(".csv")) {
-      setError("Only .csv files are supported.");
+
+    const validation = validateFile(selected);
+    if (!validation.valid) {
+      setError(validation.error || "Invalid file.");
       setFile(null);
       return;
     }
@@ -45,7 +87,8 @@ export default function UploadPage() {
   const onDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setIsDragging(false);
-    onFileSelect(event.dataTransfer.files?.[0] ?? null);
+    const selected = event.dataTransfer.files?.[0] ?? null;
+    onFileSelect(selected);
   };
 
   const onUpload = async () => {
@@ -58,6 +101,7 @@ export default function UploadPage() {
       setIsUploading(true);
       setError(null);
       setScanResult(null);
+      setUploadProgress("Uploading file...");
 
       // Reset stale client-side state before replacing dataset/report.
       localStorage.removeItem("biasxray_scan_report");
@@ -65,17 +109,23 @@ export default function UploadPage() {
       const uploaded = await uploadCsv(file);
       setUploadResult(uploaded);
       localStorage.setItem("biasxray_dataset_path", uploaded.temp_path);
+      setUploadProgress("Running bias scan...");
 
       await scanBias({ dataset_path: uploaded.temp_path });
 
       // Fetch latest persisted report so dashboard opens with fresh backend state.
+      setUploadProgress("Fetching results...");
       const latestReport = await getReport();
       setScanResult(latestReport as ScanResponse);
       localStorage.setItem("biasxray_scan_report", JSON.stringify(latestReport));
 
+      setUploadProgress(null);
       router.push(`/dashboard?refresh=${Date.now()}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Upload failed.");
+      const errorMessage = err instanceof Error ? err.message : "An unexpected error occurred during upload.";
+      setError(errorMessage);
+      setUploadProgress(null);
+      console.error("Upload error:", err);
     } finally {
       setIsUploading(false);
     }
@@ -110,25 +160,51 @@ export default function UploadPage() {
           </label>
 
           {file && (
-            <p className="mt-4 text-sm text-slate-600">
-              Selected: <span className="font-medium text-slate-900">{file.name}</span>
-            </p>
+            <div className="mt-4 space-y-2">
+              <p className="text-sm text-slate-600">
+                Selected: <span className="font-medium text-slate-900">{file.name}</span>
+              </p>
+              <p className="text-xs text-slate-500">
+                Size: {formatFileSize(file.size)} (Max: {MAX_FILE_SIZE_MB}MB)
+              </p>
+            </div>
           )}
         </div>
 
-        <button
-          onClick={onUpload}
-          disabled={isUploading}
-          className="mt-5 rounded-lg bg-teal-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-teal-300"
-        >
-          {isUploading ? "Uploading and scanning..." : "Upload and Run Scan"}
-        </button>
+        <div className="mt-4 space-y-3">
+          <button
+            onClick={onUpload}
+            disabled={!file || isUploading}
+            className="w-full rounded-lg bg-teal-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+          >
+            {isUploading ? "Processing..." : file ? "Upload and Run Scan" : "Select a file to continue"}
+          </button>
 
-        {error && (
-          <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            {error}
-          </div>
-        )}
+          {uploadProgress && (
+            <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+              <div className="flex items-center gap-2">
+                <div className="h-4 w-4 animate-spin rounded-full border-2 border-blue-300 border-t-blue-700"></div>
+                {uploadProgress}
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              <p className="font-medium">Error:</p>
+              <p className="mt-1">{error}</p>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+          <p className="text-xs font-semibold uppercase text-slate-600">Requirements:</p>
+          <ul className="mt-2 space-y-1 text-xs text-slate-600">
+            <li>✓ CSV format with headers</li>
+            <li>✓ Maximum file size: {MAX_FILE_SIZE_MB}MB</li>
+            <li>✓ At least 2 columns (features + target)</li>
+          </ul>
+        </div>
       </div>
 
       {uploadResult && (
